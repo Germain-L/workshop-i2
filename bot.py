@@ -110,13 +110,14 @@ async def on_message(message):
     if conversation_id not in active_conversations:
         active_conversations[conversation_id] = {
             "messages": [],
+            "user_messages": [],
             "timer": None,
         }
         logger.info(f"Started new conversation for channel {conversation_id}.")
 
-    # Only add the message if it hasn't been moderated yet
     if not is_message_moderated(message.id, conversation_id):
         active_conversations[conversation_id]["messages"].append(message.content)
+        active_conversations[conversation_id]["user_messages"].append(f"{message.author.name}: {message.content}")
         logger.info(f"Added message to conversation {conversation_id}: {message.content}")
 
     await reset_conversation_timer(conversation_id)
@@ -128,39 +129,38 @@ async def moderate_now(ctx):
 
     if conversation_id in active_conversations:
         messages = active_conversations[conversation_id]["messages"]
+        user_messages = active_conversations[conversation_id]["user_messages"]
         logger.info(f"Manual moderation requested for conversation {conversation_id}: {messages}")
 
         if not messages:
             await ctx.send("No new messages to moderate.")
             return
 
-        moderation_response = await moderate_messages(" ".join(messages))
+        moderation_response = await moderate_messages(" ".join(messages), user_messages)
 
         if moderation_response:
             harmfulness_level = moderation_response.get("harmfulness_level", "none")
             reasons = moderation_response.get("reasons", [])
             action_required = moderation_response.get("action_required", "")
+            user_scores = moderation_response.get("user_scores", {})
 
-            # Update user scores based on harmfulness level
+            # Update user scores based on the AI's assessment
             async for message in ctx.channel.history(limit=len(messages)):
                 if not is_message_moderated(message.id, conversation_id):
                     author_id = message.author.id
                     author_name = message.author.name
-                    if harmfulness_level == "high":
-                        update_user_score(author_id, author_name, -2)  # Penalty for high harmfulness
-                    elif harmfulness_level == "medium":
-                        update_user_score(author_id, author_name, -1)  # Penalty for medium harmfulness
-                    elif harmfulness_level == "low":
-                        update_user_score(author_id, author_name, 1)  # Bonus for low harmfulness
+                    score_change = user_scores.get(author_name, 0)
+                    update_user_score(author_id, author_name, score_change)
                     mark_message_as_moderated(message.id, conversation_id)
 
-            log_moderation(conversation_id, reasons, action_required)
+            log_moderation(conversation_id, reasons, action_required, user_scores)
             
             # Respond to the moderator with the moderation results
             await ctx.send(f"Moderation completed for {len(messages)} new messages. Harmfulness level: {harmfulness_level}. Reasons: {', '.join(reasons)}")
             
             # Clear the moderated messages from the active conversation
             active_conversations[conversation_id]["messages"] = []
+            active_conversations[conversation_id]["user_messages"] = []
         else:
             await ctx.send("No harmful content detected in the new messages.")
     else:
@@ -176,39 +176,37 @@ async def reset_conversation_timer(conversation_id):
 async def close_conversation(conversation_id):
     await asyncio.sleep(180)
     messages = active_conversations[conversation_id]["messages"]
+    user_messages = active_conversations[conversation_id]["user_messages"]
     logger.info(f"Closing conversation {conversation_id} and moderating messages: {messages}")
 
-    moderation_response = await moderate_messages(" ".join(messages))
+    moderation_response = await moderate_messages(" ".join(messages), user_messages)
 
     if moderation_response:
         harmfulness_level = moderation_response.get("harmfulness_level", "none")
         reasons = moderation_response.get("reasons", [])
         action_required = moderation_response.get("action_required", "")
+        user_scores = moderation_response.get("user_scores", {})
 
         channel = bot.get_channel(conversation_id)
 
-        # Update user scores based on harmfulness level
+        # Update user scores based on the AI's assessment
         async for message in channel.history(limit=len(messages)):
             if not is_message_moderated(message.id, conversation_id):
                 author_id = message.author.id
                 author_name = message.author.name
-                if harmfulness_level == "high":
-                    update_user_score(author_id, author_name, -2)  # Penalty for high harmfulness
-                elif harmfulness_level == "medium":
-                    update_user_score(author_id, author_name, -1)  # Penalty for medium harmfulness
-                elif harmfulness_level == "low":
-                    update_user_score(author_id, author_name, 1)  # Bonus for low harmfulness
+                score_change = user_scores.get(author_name, 0)
+                update_user_score(author_id, author_name, score_change)
                 mark_message_as_moderated(message.id, conversation_id)
 
-        log_moderation(conversation_id, reasons, action_required)
+        log_moderation(conversation_id, reasons, action_required, user_scores)
 
     del active_conversations[conversation_id]
 
-async def moderate_messages(conversation_text):
+async def moderate_messages(conversation_text, user_messages):
     messages = [
         {
             "role": "user",
-            "content": f"Moderate the following conversation: '{conversation_text}'. Respond with a JSON object that includes 'harmfulness_level', 'reasons', and 'action_required'."
+            "content": f"Moderate the following conversation: '{conversation_text}'. Each message is preceded by the user's name. Respond with a JSON object that includes 'harmfulness_level', 'reasons', 'action_required', and 'user_scores'. The 'user_scores' should be an object where keys are usernames and values are integers representing the score change for that user (-2 for highly harmful, -1 for moderately harmful, 0 for neutral, 1 for positive contributions)."
         }
     ]
 
@@ -225,15 +223,15 @@ async def moderate_messages(conversation_text):
             response_json = json.loads(chat_response.choices[0].message.content)
             return response_json
         else:
-            return {"harmfulness_level": "none", "reasons": [], "action_required": ""}
+            return {"harmfulness_level": "none", "reasons": [], "action_required": "", "user_scores": {}}
     except Exception as e:
         logger.error(f"An error occurred while calling Mistral: {e}")
-        return {"harmfulness_level": "none", "reasons": [], "action_required": ""}
+        return {"harmfulness_level": "none", "reasons": [], "action_required": "", "user_scores": {}}
 
-def log_moderation(conversation_id, reasons, action_required):
+def log_moderation(conversation_id, reasons, action_required, user_scores):
     with open("moderation_log.txt", "a") as log_file:
-        log_file.write(f"{conversation_id} - Action Required: {action_required} - Reasons: {', '.join(reasons)}\n")
-    logger.info(f"Moderation logged for conversation {conversation_id}. Reasons: {', '.join(reasons)}")
+        log_file.write(f"{conversation_id} - Action Required: {action_required} - Reasons: {', '.join(reasons)} - User Scores: {json.dumps(user_scores)}\n")
+    logger.info(f"Moderation logged for conversation {conversation_id}. Reasons: {', '.join(reasons)}, User Scores: {user_scores}")
 
 @bot.command()
 async def user_score(ctx, user: discord.User):
