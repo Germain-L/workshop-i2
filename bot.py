@@ -6,9 +6,7 @@ from dotenv import load_dotenv
 import asyncio
 import json
 import logging
-import psycopg2
-from psycopg2 import pool
-from collections import Counter
+import asyncpg
 
 load_dotenv()
 
@@ -37,91 +35,57 @@ bot.remove_command('help')  # Remove the default help command
 # Dictionary to store active conversations
 active_conversations = {}
 
-# Database connection pool
-db_pool = psycopg2.pool.SimpleConnectionPool(1, 20, DATABASE_URL)
+# Database connection
+db = None
+
+async def create_pool():
+    global db
+    db = await asyncpg.create_pool(DATABASE_URL)
 
 # Database setup
-def create_database():
-    conn = db_pool.getconn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute('''CREATE TABLE IF NOT EXISTS users
-                           (id BIGINT PRIMARY KEY, username TEXT, score INTEGER)''')
-            cur.execute('''CREATE TABLE IF NOT EXISTS moderated_messages
-                           (message_id BIGINT PRIMARY KEY, channel_id BIGINT)''')
-        conn.commit()
-    finally:
-        db_pool.putconn(conn)
+async def create_database():
+    async with db.acquire() as conn:
+        await conn.execute('''CREATE TABLE IF NOT EXISTS users
+                              (id BIGINT PRIMARY KEY, username TEXT, score INTEGER)''')
+        await conn.execute('''CREATE TABLE IF NOT EXISTS moderated_messages
+                              (message_id BIGINT PRIMARY KEY, channel_id BIGINT)''')
 
-def get_user_score(user_id):
-    conn = db_pool.getconn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT score FROM users WHERE id = %s", (user_id,))
-            result = cur.fetchone()
-        return result[0] if result else 0
-    finally:
-        db_pool.putconn(conn)
+async def get_user_score(user_id):
+    async with db.acquire() as conn:
+        return await conn.fetchval("SELECT score FROM users WHERE id = $1", user_id) or 0
 
-def update_user_score(user_id, username, score_change):
-    conn = db_pool.getconn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO users (id, username, score) 
-                VALUES (%s, %s, %s)
-                ON CONFLICT (id) DO UPDATE 
-                SET username = EXCLUDED.username, score = users.score + %s
-            """, (user_id, username, score_change, score_change))
-        conn.commit()
-    finally:
-        db_pool.putconn(conn)
+async def update_user_score(user_id, username, score_change):
+    async with db.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO users (id, username, score) 
+            VALUES ($1, $2, $3)
+            ON CONFLICT (id) DO UPDATE 
+            SET username = EXCLUDED.username, score = users.score + $3
+        """, user_id, username, score_change)
 
-def is_message_moderated(message_id, channel_id):
-    conn = db_pool.getconn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM moderated_messages WHERE message_id = %s AND channel_id = %s", (message_id, channel_id))
-            result = cur.fetchone()
-        return result is not None
-    finally:
-        db_pool.putconn(conn)
+async def is_message_moderated(message_id, channel_id):
+    async with db.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM moderated_messages WHERE message_id = $1 AND channel_id = $2", message_id, channel_id) is not None
 
-def mark_message_as_moderated(message_id, channel_id):
-    conn = db_pool.getconn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO moderated_messages (message_id, channel_id) VALUES (%s, %s)", (message_id, channel_id))
-        conn.commit()
-    finally:
-        db_pool.putconn(conn)
+async def mark_message_as_moderated(message_id, channel_id):
+    async with db.acquire() as conn:
+        await conn.execute("INSERT INTO moderated_messages (message_id, channel_id) VALUES ($1, $2)", message_id, channel_id)
 
-def get_top_users(limit=10):
-    conn = db_pool.getconn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT username, score FROM users ORDER BY score DESC LIMIT %s", (limit,))
-            result = cur.fetchall()
-        return result
-    finally:
-        db_pool.putconn(conn)
+async def get_top_users(limit=10):
+    async with db.acquire() as conn:
+        return await conn.fetch("SELECT username, score FROM users ORDER BY score DESC LIMIT $1", limit)
 
-def get_moderation_stats():
-    conn = db_pool.getconn()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM moderated_messages")
-            total_moderated = cur.fetchone()[0]
-            cur.execute("SELECT COUNT(DISTINCT channel_id) FROM moderated_messages")
-            channels_moderated = cur.fetchone()[0]
-        return total_moderated, channels_moderated
-    finally:
-        db_pool.putconn(conn)
+async def get_moderation_stats():
+    async with db.acquire() as conn:
+        total_moderated = await conn.fetchval("SELECT COUNT(*) FROM moderated_messages")
+        channels_moderated = await conn.fetchval("SELECT COUNT(DISTINCT channel_id) FROM moderated_messages")
+    return total_moderated, channels_moderated
 
 @bot.event
 async def on_ready():
+    await create_pool()
+    await create_database()
     logger.info(f'Logged in as {bot.user}!')
-    create_database()
 
 @bot.event
 async def on_message(message):
@@ -138,7 +102,7 @@ async def on_message(message):
         }
         logger.info(f"Started new conversation for channel {conversation_id}.")
 
-    if not is_message_moderated(message.id, conversation_id):
+    if not await is_message_moderated(message.id, conversation_id):
         active_conversations[conversation_id]["messages"].append(message.content)
         active_conversations[conversation_id]["user_messages"].append(f"{message.author.name}: {message.content}")
         logger.info(f"Added message to conversation {conversation_id}: {message.content}")
@@ -169,12 +133,12 @@ async def moderate_now(ctx):
 
             # Update user scores based on the AI's assessment
             async for message in ctx.channel.history(limit=len(messages)):
-                if not is_message_moderated(message.id, conversation_id):
+                if not await is_message_moderated(message.id, conversation_id):
                     author_id = message.author.id
                     author_name = message.author.name
                     score_change = user_scores.get(author_name, 0)
-                    update_user_score(author_id, author_name, score_change)
-                    mark_message_as_moderated(message.id, conversation_id)
+                    await update_user_score(author_id, author_name, score_change)
+                    await mark_message_as_moderated(message.id, conversation_id)
 
             log_moderation(conversation_id, reasons, action_required, user_scores)
             
@@ -214,12 +178,12 @@ async def close_conversation(conversation_id):
 
         # Update user scores based on the AI's assessment
         async for message in channel.history(limit=len(messages)):
-            if not is_message_moderated(message.id, conversation_id):
+            if not await is_message_moderated(message.id, conversation_id):
                 author_id = message.author.id
                 author_name = message.author.name
                 score_change = user_scores.get(author_name, 0)
-                update_user_score(author_id, author_name, score_change)
-                mark_message_as_moderated(message.id, conversation_id)
+                await update_user_score(author_id, author_name, score_change)
+                await mark_message_as_moderated(message.id, conversation_id)
 
         log_moderation(conversation_id, reasons, action_required, user_scores)
 
@@ -259,13 +223,13 @@ def log_moderation(conversation_id, reasons, action_required, user_scores):
 @bot.command()
 async def user_score(ctx, user: discord.User):
     """Check the score of a specific user."""
-    score = get_user_score(user.id)
+    score = await get_user_score(user.id)
     await ctx.send(f"{user.name}'s score: {score}")
 
 @bot.command()
 async def leaderboard(ctx):
     """Display the top 10 users with the highest scores."""
-    top_users = get_top_users(10)
+    top_users = await get_top_users(10)
     leaderboard_message = "🏆 Top 10 Users:\n\n"
     for i, (username, score) in enumerate(top_users, 1):
         leaderboard_message += f"{i}. {username}: {score} points\n"
@@ -274,7 +238,7 @@ async def leaderboard(ctx):
 @bot.command()
 async def modstats(ctx):
     """Display moderation statistics."""
-    total_moderated, channels_moderated = get_moderation_stats()
+    total_moderated, channels_moderated = await get_moderation_stats()
     stats_message = f"📊 Moderation Statistics:\n\n"
     stats_message += f"Total messages moderated: {total_moderated}\n"
     stats_message += f"Channels moderated: {channels_moderated}\n"
