@@ -6,7 +6,8 @@ from dotenv import load_dotenv
 import asyncio
 import json
 import logging
-import sqlite3
+import psycopg2
+from psycopg2 import pool
 from collections import Counter
 
 load_dotenv()
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 # Get the tokens from environment variables
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
 MISTRAL_API_KEY = os.environ["MISTRAL_API_KEY"]
+DATABASE_URL = os.environ["DATABASE_URL"]
 
 # Initialize the Mistral client
 mistral_client = Mistral(api_key=MISTRAL_API_KEY)
@@ -35,65 +37,86 @@ bot.remove_command('help')  # Remove the default help command
 # Dictionary to store active conversations
 active_conversations = {}
 
+# Database connection pool
+db_pool = psycopg2.pool.SimpleConnectionPool(1, 20, DATABASE_URL)
+
 # Database setup
 def create_database():
-    conn = sqlite3.connect('moderation.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS users
-                 (id INTEGER PRIMARY KEY, username TEXT, score INTEGER)''')
-    c.execute('''CREATE TABLE IF NOT EXISTS moderated_messages
-                 (message_id INTEGER PRIMARY KEY, channel_id INTEGER)''')
-    conn.commit()
-    conn.close()
+    conn = db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute('''CREATE TABLE IF NOT EXISTS users
+                           (id BIGINT PRIMARY KEY, username TEXT, score INTEGER)''')
+            cur.execute('''CREATE TABLE IF NOT EXISTS moderated_messages
+                           (message_id BIGINT PRIMARY KEY, channel_id BIGINT)''')
+        conn.commit()
+    finally:
+        db_pool.putconn(conn)
 
 def get_user_score(user_id):
-    conn = sqlite3.connect('moderation.db')
-    c = conn.cursor()
-    c.execute("SELECT score FROM users WHERE id = ?", (user_id,))
-    result = c.fetchone()
-    conn.close()
-    return result[0] if result else 0
+    conn = db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT score FROM users WHERE id = %s", (user_id,))
+            result = cur.fetchone()
+        return result[0] if result else 0
+    finally:
+        db_pool.putconn(conn)
 
 def update_user_score(user_id, username, score_change):
-    conn = sqlite3.connect('moderation.db')
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO users (id, username, score) VALUES (?, ?, coalesce((SELECT score FROM users WHERE id = ?), 0) + ?)",
-              (user_id, username, user_id, score_change))
-    conn.commit()
-    conn.close()
+    conn = db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO users (id, username, score) 
+                VALUES (%s, %s, %s)
+                ON CONFLICT (id) DO UPDATE 
+                SET username = EXCLUDED.username, score = users.score + %s
+            """, (user_id, username, score_change, score_change))
+        conn.commit()
+    finally:
+        db_pool.putconn(conn)
 
 def is_message_moderated(message_id, channel_id):
-    conn = sqlite3.connect('moderation.db')
-    c = conn.cursor()
-    c.execute("SELECT * FROM moderated_messages WHERE message_id = ? AND channel_id = ?", (message_id, channel_id))
-    result = c.fetchone()
-    conn.close()
-    return result is not None
+    conn = db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM moderated_messages WHERE message_id = %s AND channel_id = %s", (message_id, channel_id))
+            result = cur.fetchone()
+        return result is not None
+    finally:
+        db_pool.putconn(conn)
 
 def mark_message_as_moderated(message_id, channel_id):
-    conn = sqlite3.connect('moderation.db')
-    c = conn.cursor()
-    c.execute("INSERT INTO moderated_messages (message_id, channel_id) VALUES (?, ?)", (message_id, channel_id))
-    conn.commit()
-    conn.close()
+    conn = db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO moderated_messages (message_id, channel_id) VALUES (%s, %s)", (message_id, channel_id))
+        conn.commit()
+    finally:
+        db_pool.putconn(conn)
 
 def get_top_users(limit=10):
-    conn = sqlite3.connect('moderation.db')
-    c = conn.cursor()
-    c.execute("SELECT username, score FROM users ORDER BY score DESC LIMIT ?", (limit,))
-    result = c.fetchall()
-    conn.close()
-    return result
+    conn = db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT username, score FROM users ORDER BY score DESC LIMIT %s", (limit,))
+            result = cur.fetchall()
+        return result
+    finally:
+        db_pool.putconn(conn)
 
 def get_moderation_stats():
-    conn = sqlite3.connect('moderation.db')
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM moderated_messages")
-    total_moderated = c.fetchone()[0]
-    c.execute("SELECT COUNT(DISTINCT channel_id) FROM moderated_messages")
-    channels_moderated = c.fetchone()[0]
-    conn.close()
-    return total_moderated, channels_moderated
+    conn = db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM moderated_messages")
+            total_moderated = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(DISTINCT channel_id) FROM moderated_messages")
+            channels_moderated = cur.fetchone()[0]
+        return total_moderated, channels_moderated
+    finally:
+        db_pool.putconn(conn)
 
 @bot.event
 async def on_ready():
