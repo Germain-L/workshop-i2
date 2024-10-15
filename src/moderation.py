@@ -33,7 +33,7 @@ async def moderate_conversation(ctx, bot):
             await ctx.send("No new messages to moderate.")
             return
 
-        moderation_response = await moderate_messages(" ".join(messages), user_messages)
+        moderation_response = await moderate_messages(user_messages)
 
         if moderation_response:
             harmfulness_level = moderation_response.get("harmfulness_level", "none")
@@ -41,13 +41,13 @@ async def moderate_conversation(ctx, bot):
             action_required = moderation_response.get("action_required", "")
             user_scores = moderation_response.get("user_scores", {})
 
-            async for message in ctx.channel.history(limit=len(messages)):
-                if not await is_message_moderated(message.id, conversation_id):
-                    author_id = message.author.id
-                    author_name = message.author.name
+            for message in user_messages:
+                if not await is_message_moderated(message['id'], conversation_id):
+                    author_id = message['id']
+                    author_name = message['name']
                     score_change = user_scores.get(author_name, 0)
                     await update_user_score(author_id, author_name, score_change)
-                    await mark_message_as_moderated(message.id, conversation_id)
+                    await mark_message_as_moderated(message['id'], conversation_id)
 
             log_moderation(conversation_id, reasons, action_required, user_scores)
             
@@ -61,11 +61,12 @@ async def moderate_conversation(ctx, bot):
         await ctx.send("No ongoing conversation to moderate.")
         logger.info(f"No active conversation found for moderation in channel {conversation_id}.")
 
-async def moderate_messages(conversation_text, user_messages):
+async def moderate_messages(user_messages):
+    conversation_text = "\n".join([f"{msg['name']}: {msg['content']}" for msg in user_messages])
     messages = [
         {
             "role": "user",
-            "content": f"Moderate the following conversation: '{conversation_text}'. Each message is preceded by the user's name. Respond with a JSON object that includes 'harmfulness_level', 'reasons', 'action_required', and 'user_scores'. The 'user_scores' should be an object where keys are usernames and values are integers representing the score change for that user (-2 for highly harmful, -1 for moderately harmful, 0 for neutral, 1 for positive contributions)."
+            "content": f"Moderate the following conversation:\n{conversation_text}\nEach message is preceded by the user's name. Respond with a JSON object that includes 'harmfulness_level', 'reasons', 'action_required', and 'user_scores'. The 'user_scores' should be an object where keys are usernames and values are integers representing the score change for that user (-2 for highly harmful, -1 for moderately harmful, 0 for neutral, 1 for positive contributions)."
         }
     ]
 

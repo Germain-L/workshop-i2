@@ -40,7 +40,11 @@ async def setup_bot():
             logger.info(f"Started new conversation for channel {conversation_id}.")
 
         active_conversations[conversation_id]["messages"].append(message.content)
-        active_conversations[conversation_id]["user_messages"].append(f"{message.author.name}: {message.content}")
+        active_conversations[conversation_id]["user_messages"].append({
+            "id": message.author.id,
+            "name": message.author.name,
+            "content": message.content
+        })
         logger.info(f"Added message to conversation {conversation_id}: {message.content}")
 
         await reset_conversation_timer(conversation_id, bot)
