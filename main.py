@@ -4,7 +4,7 @@ from src.database import create_pool, create_database
 from src.config import DISCORD_TOKEN
 
 async def main():
-    bot = setup_bot()
+    bot = await setup_bot()
     await create_pool()
     await create_database()
     await bot.start(DISCORD_TOKEN)

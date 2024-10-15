@@ -3,18 +3,22 @@ from discord.ext import commands
 from .config import DISCORD_TOKEN
 import logging
 from .moderation import active_conversations, reset_conversation_timer
+from .commands import ModCommands
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def setup_bot():
+async def setup_bot():
     intents = discord.Intents.all()
     intents.messages = True
     intents.guilds = True
 
     bot = commands.Bot(command_prefix='!', intents=intents)
     bot.remove_command('help')
+
+    # Add this line to load the commands
+    await bot.add_cog(ModCommands(bot))
 
     @bot.event
     async def on_ready():

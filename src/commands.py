@@ -44,6 +44,3 @@ class ModCommands(commands.Cog):
             "For additional assistance, please reach out to a moderator."
         )
         await ctx.send(help_message)
-
-def setup(bot):
-    bot.add_cog(ModCommands(bot))
