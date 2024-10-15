@@ -17,4 +17,4 @@ EXPOSE 8000
 ENV PYTHONUNBUFFERED=1
 
 # Run the application
-CMD ["python", "bot.py"]
+CMD ["python", "main.py"]
