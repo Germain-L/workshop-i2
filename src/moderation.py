@@ -4,8 +4,8 @@ import logging
 import time
 
 from mistralai import Mistral
-from config import MISTRAL_API_KEY, model, last_alert_time, ALERT_COOLDOWN, AUTO_MODERATE_INTERVAL
-from database import update_user_score, mark_message_as_moderated, is_message_moderated
+from .config import MISTRAL_API_KEY, model, last_alert_time, ALERT_COOLDOWN, AUTO_MODERATE_INTERVAL
+from .database import update_user_score, mark_message_as_moderated, is_message_moderated
 
 logger = logging.getLogger(__name__)
 
