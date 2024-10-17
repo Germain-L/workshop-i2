@@ -1,8 +1,10 @@
 import asyncio
 import json
 import logging
+import time
+
 from mistralai import Mistral
-from .config import MISTRAL_API_KEY, model
+from .config import MISTRAL_API_KEY, model, last_alert_time, ALERT_COOLDOWN
 from .database import update_user_score, mark_message_as_moderated, is_message_moderated
 
 logger = logging.getLogger(__name__)
@@ -28,9 +30,13 @@ async def moderate_conversation(ctx, bot):
     if conversation_id in active_conversations:
         messages = active_conversations[conversation_id]["messages"]
         user_messages = active_conversations[conversation_id]["user_messages"]
+
+        # Filter out command messages
+        user_messages = [msg for msg in user_messages if not msg['content'].startswith('!')]
+
         logger.info(f"Moderation requested for conversation {conversation_id}: {messages}")
 
-        if not messages:
+        if not user_messages:
             await ctx.send("No new messages to moderate.")
             return
 
@@ -45,26 +51,20 @@ async def moderate_conversation(ctx, bot):
             for message in user_messages:
                 author_id = message['id']
                 author_name = message['name']
-                content = message['content']
+                message_id = message['message_id']
                 score_change = user_scores.get(author_name, 0)
 
-                # Fetch the actual message object to get its ID
-                channel = bot.get_channel(conversation_id)
-                async for msg in channel.history(limit=None):
-                    if msg.author.id == author_id and msg.content == content:
-                        message_id = msg.id
-                        if not await is_message_moderated(message_id, conversation_id):
-                            alert_needed = await update_user_score(author_id, author_name, score_change)
-                            await mark_message_as_moderated(message_id, conversation_id)
+                if not await is_message_moderated(message_id, conversation_id):
+                    alert_needed = await update_user_score(author_id, author_name, score_change)
+                    await mark_message_as_moderated(message_id, conversation_id)
 
-                            if alert_needed:
-                                await send_moderator_alert(ctx, author_id, author_name)
-                        break
+                    if alert_needed:
+                        await send_moderator_alert(ctx, author_id, author_name)
 
             log_moderation(conversation_id, reasons, action_required, user_scores)
 
             await ctx.send(
-                f"Moderation completed for {len(messages)} new messages. Harmfulness level: {harmfulness_level}. Reasons: {', '.join(reasons)}")
+                f"Moderation completed for {len(user_messages)} new messages. Harmfulness level: {harmfulness_level}. Reasons: {', '.join(reasons)}")
 
             active_conversations[conversation_id]["messages"] = []
             active_conversations[conversation_id]["user_messages"] = []
@@ -73,7 +73,6 @@ async def moderate_conversation(ctx, bot):
     else:
         await ctx.send("No ongoing conversation to moderate.")
         logger.info(f"No active conversation found for moderation in channel {conversation_id}.")
-
 
 async def moderate_messages(user_messages):
     conversation_text = "\n".join([f"{msg['name']}: {msg['content']}" for msg in user_messages])
@@ -108,6 +107,13 @@ def log_moderation(conversation_id, reasons, action_required, user_scores):
     logger.info(f"Moderation logged for conversation {conversation_id}. Reasons: {', '.join(reasons)}, User Scores: {user_scores}")
 
 async def send_moderator_alert(ctx, user_id, username):
+    current_time = time.time()
+    if user_id in last_alert_time and current_time - last_alert_time[user_id] < ALERT_COOLDOWN:
+        logger.info(f"Skipping alert for user {username} (ID: {user_id}) due to cooldown")
+        return
+
     moderator_channel = ctx.guild.get_channel(1296367023948955728)
     if moderator_channel:
         await moderator_channel.send(f"⚠️ ALERT: User {username} (ID: {user_id}) has reached a concerning score level. Please review their recent activity.")
+        last_alert_time[user_id] = current_time
+        logger.info(f"Sent alert for user {username} (ID: {user_id})")
