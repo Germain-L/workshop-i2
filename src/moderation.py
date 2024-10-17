@@ -4,7 +4,7 @@ import logging
 import time
 
 from mistralai import Mistral
-from .config import MISTRAL_API_KEY, model, last_alert_time, ALERT_COOLDOWN
+from .config import MISTRAL_API_KEY, model, last_alert_time, ALERT_COOLDOWN, AUTO_MODERATE_INTERVAL
 from .database import update_user_score, mark_message_as_moderated, is_message_moderated
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,24 @@ async def close_conversation(conversation_id, bot):
     await moderate_conversation(bot.get_channel(conversation_id), bot)
 
 
+async def reset_conversation_timer(conversation_id, bot):
+    if active_conversations[conversation_id]["timer"]:
+        active_conversations[conversation_id]["timer"].cancel()
+
+    active_conversations[conversation_id]["timer"] = asyncio.create_task(close_conversation(conversation_id, bot))
+
+async def close_conversation(conversation_id, bot):
+    await asyncio.sleep(180)
+    await moderate_conversation(bot.get_channel(conversation_id), bot)
+
+async def start_auto_moderation(bot):
+    while True:
+        await asyncio.sleep(AUTO_MODERATE_INTERVAL)
+        for channel_id in active_conversations:
+            channel = bot.get_channel(channel_id)
+            if channel:
+                await moderate_conversation(channel, bot)
+
 async def moderate_conversation(ctx, bot):
     conversation_id = ctx.channel.id
 
@@ -37,7 +55,7 @@ async def moderate_conversation(ctx, bot):
         logger.info(f"Moderation requested for conversation {conversation_id}: {messages}")
 
         if not user_messages:
-            await ctx.send("No new messages to moderate.")
+            logger.info(f"No new messages to moderate in conversation {conversation_id}.")
             return
 
         moderation_response = await moderate_messages(user_messages)
@@ -63,15 +81,13 @@ async def moderate_conversation(ctx, bot):
 
             log_moderation(conversation_id, reasons, action_required, user_scores)
 
-            await ctx.send(
-                f"Moderation completed for {len(user_messages)} new messages. Harmfulness level: {harmfulness_level}. Reasons: {', '.join(reasons)}")
+            logger.info(f"Moderation completed for {len(user_messages)} new messages in conversation {conversation_id}. Harmfulness level: {harmfulness_level}. Reasons: {', '.join(reasons)}")
 
             active_conversations[conversation_id]["messages"] = []
             active_conversations[conversation_id]["user_messages"] = []
         else:
-            await ctx.send("No harmful content detected in the new messages.")
+            logger.info(f"No harmful content detected in the new messages for conversation {conversation_id}.")
     else:
-        await ctx.send("No ongoing conversation to moderate.")
         logger.info(f"No active conversation found for moderation in channel {conversation_id}.")
 
 async def moderate_messages(user_messages):

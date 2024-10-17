@@ -1,8 +1,7 @@
 import discord
 from discord.ext import commands
-from .config import DISCORD_TOKEN
 import logging
-from .moderation import active_conversations, reset_conversation_timer
+from .moderation import active_conversations, reset_conversation_timer, start_auto_moderation
 from .commands import ModCommands
 
 # Set up logging
@@ -23,6 +22,7 @@ async def setup_bot():
     @bot.event
     async def on_ready():
         logger.info(f'Logged in as {bot.user}!')
+        bot.loop.create_task(start_auto_moderation(bot))
 
     @bot.event
     async def on_message(message):
