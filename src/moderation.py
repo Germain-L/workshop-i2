@@ -43,15 +43,23 @@ async def moderate_conversation(ctx, bot):
             user_scores = moderation_response.get("user_scores", {})
 
             for message in user_messages:
-                if not await is_message_moderated(message['id'], conversation_id):
-                    author_id = message['id']
-                    author_name = message['name']
-                    score_change = user_scores.get(author_name, 0)
-                    alert_needed = await update_user_score(author_id, author_name, score_change)
-                    await mark_message_as_moderated(message['id'], conversation_id)
+                author_id = message['id']
+                author_name = message['name']
+                content = message['content']
+                score_change = user_scores.get(author_name, 0)
 
-                    if alert_needed:
-                        await send_moderator_alert(ctx, author_id, author_name)
+                # Fetch the actual message object to get its ID
+                channel = bot.get_channel(conversation_id)
+                async for msg in channel.history(limit=None):
+                    if msg.author.id == author_id and msg.content == content:
+                        message_id = msg.id
+                        if not await is_message_moderated(message_id, conversation_id):
+                            alert_needed = await update_user_score(author_id, author_name, score_change)
+                            await mark_message_as_moderated(message_id, conversation_id)
+
+                            if alert_needed:
+                                await send_moderator_alert(ctx, author_id, author_name)
+                        break
 
             log_moderation(conversation_id, reasons, action_required, user_scores)
 
@@ -65,6 +73,7 @@ async def moderate_conversation(ctx, bot):
     else:
         await ctx.send("No ongoing conversation to moderate.")
         logger.info(f"No active conversation found for moderation in channel {conversation_id}.")
+
 
 async def moderate_messages(user_messages):
     conversation_text = "\n".join([f"{msg['name']}: {msg['content']}" for msg in user_messages])

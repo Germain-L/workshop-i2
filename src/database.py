@@ -40,7 +40,11 @@ async def is_message_moderated(message_id, channel_id):
 
 async def mark_message_as_moderated(message_id, channel_id):
     async with db.acquire() as conn:
-        await conn.execute("INSERT INTO moderated_messages (message_id, channel_id) VALUES ($1, $2)", message_id, channel_id)
+        await conn.execute("""
+            INSERT INTO moderated_messages (message_id, channel_id)
+            VALUES ($1, $2)
+            ON CONFLICT (message_id) DO NOTHING
+        """, message_id, channel_id)
 
 async def get_top_users(limit=10):
     async with db.acquire() as conn:

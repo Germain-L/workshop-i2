@@ -43,7 +43,8 @@ async def setup_bot():
         active_conversations[conversation_id]["user_messages"].append({
             "id": message.author.id,
             "name": message.author.name,
-            "content": message.content
+            "content": message.content,
+            "message_id": message.id  # Store the message ID
         })
         logger.info(f"Added message to conversation {conversation_id}: {message.content}")
 
