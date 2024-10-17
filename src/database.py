@@ -1,6 +1,5 @@
 import asyncpg
-from .config import DATABASE_URL
-
+from .config import DATABASE_URL, SCORE_ALERT_THRESHOLD
 db = None
 
 async def create_pool():
@@ -18,6 +17,7 @@ async def get_user_score(user_id):
     async with db.acquire() as conn:
         return await conn.fetchval("SELECT score FROM users WHERE id = $1", user_id) or 0
 
+
 async def update_user_score(user_id, username, score_change):
     async with db.acquire() as conn:
         await conn.execute("""
@@ -25,7 +25,14 @@ async def update_user_score(user_id, username, score_change):
             VALUES ($1, $2, $3)
             ON CONFLICT (id) DO UPDATE 
             SET username = EXCLUDED.username, score = users.score + $3
+            RETURNING score
         """, user_id, username, score_change)
+
+        new_score = await conn.fetchval("SELECT score FROM users WHERE id = $1", user_id)
+
+        if new_score <= SCORE_ALERT_THRESHOLD:
+            return True
+        return False
 
 async def is_message_moderated(message_id, channel_id):
     async with db.acquire() as conn:
