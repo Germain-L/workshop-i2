@@ -70,7 +70,7 @@ async def moderate_conversation(channel):
                     await mark_message_as_moderated(message_id, conversation_id)
 
                     if alert_needed:
-                        await send_moderator_alert(ctx, author_id, author_name)
+                        await send_moderator_alert(channel, author_id, author_name)
 
             log_moderation(conversation_id, reasons, action_required, user_scores)
 
