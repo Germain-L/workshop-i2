@@ -4,8 +4,8 @@ import logging
 import time
 
 from mistralai import Mistral
-from .config import MISTRAL_API_KEY, model, last_alert_time, ALERT_COOLDOWN, AUTO_MODERATE_INTERVAL
-from .database import update_user_score, mark_message_as_moderated, is_message_moderated
+from config import MISTRAL_API_KEY, model, last_alert_time, ALERT_COOLDOWN, AUTO_MODERATE_INTERVAL
+from database import update_user_score, mark_message_as_moderated, is_message_moderated
 
 logger = logging.getLogger(__name__)
 
@@ -13,16 +13,6 @@ mistral_client = Mistral(api_key=MISTRAL_API_KEY)
 
 active_conversations = {}
 
-async def reset_conversation_timer(conversation_id, bot):
-    if active_conversations[conversation_id]["timer"]:
-        active_conversations[conversation_id]["timer"].cancel()
-
-    active_conversations[conversation_id]["timer"] = asyncio.create_task(close_conversation(conversation_id, bot))
-
-async def close_conversation(conversation_id, bot):
-    await asyncio.sleep(180)
-    await moderate_conversation(bot.get_channel(conversation_id), bot)
-
 
 async def reset_conversation_timer(conversation_id, bot):
     if active_conversations[conversation_id]["timer"]:
@@ -30,9 +20,11 @@ async def reset_conversation_timer(conversation_id, bot):
 
     active_conversations[conversation_id]["timer"] = asyncio.create_task(close_conversation(conversation_id, bot))
 
+
 async def close_conversation(conversation_id, bot):
     await asyncio.sleep(180)
     await moderate_conversation(bot.get_channel(conversation_id), bot)
+
 
 async def start_auto_moderation(bot):
     while True:
@@ -40,10 +32,11 @@ async def start_auto_moderation(bot):
         for channel_id in active_conversations:
             channel = bot.get_channel(channel_id)
             if channel:
-                await moderate_conversation(channel, bot)
+                await moderate_conversation(channel)
 
-async def moderate_conversation(ctx, bot):
-    conversation_id = ctx.channel.id
+
+async def moderate_conversation(channel):
+    conversation_id = channel.id
 
     if conversation_id in active_conversations:
         messages = active_conversations[conversation_id]["messages"]
@@ -81,7 +74,8 @@ async def moderate_conversation(ctx, bot):
 
             log_moderation(conversation_id, reasons, action_required, user_scores)
 
-            logger.info(f"Moderation completed for {len(user_messages)} new messages in conversation {conversation_id}. Harmfulness level: {harmfulness_level}. Reasons: {', '.join(reasons)}")
+            logger.info(
+                f"Moderation completed for {len(user_messages)} new messages in conversation {conversation_id}. Harmfulness level: {harmfulness_level}. Reasons: {', '.join(reasons)}")
 
             active_conversations[conversation_id]["messages"] = []
             active_conversations[conversation_id]["user_messages"] = []
@@ -89,6 +83,7 @@ async def moderate_conversation(ctx, bot):
             logger.info(f"No harmful content detected in the new messages for conversation {conversation_id}.")
     else:
         logger.info(f"No active conversation found for moderation in channel {conversation_id}.")
+
 
 async def moderate_messages(user_messages):
     conversation_text = "\n".join([f"{msg['name']}: {msg['content']}" for msg in user_messages])
@@ -117,10 +112,14 @@ async def moderate_messages(user_messages):
         logger.error(f"An error occurred while calling Mistral: {e}")
         return {"harmfulness_level": "none", "reasons": [], "action_required": "", "user_scores": {}}
 
+
 def log_moderation(conversation_id, reasons, action_required, user_scores):
     with open("moderation_log.txt", "a") as log_file:
-        log_file.write(f"{conversation_id} - Action Required: {action_required} - Reasons: {', '.join(reasons)} - User Scores: {json.dumps(user_scores)}\n")
-    logger.info(f"Moderation logged for conversation {conversation_id}. Reasons: {', '.join(reasons)}, User Scores: {user_scores}")
+        log_file.write(
+            f"{conversation_id} - Action Required: {action_required} - Reasons: {', '.join(reasons)} - User Scores: {json.dumps(user_scores)}\n")
+    logger.info(
+        f"Moderation logged for conversation {conversation_id}. Reasons: {', '.join(reasons)}, User Scores: {user_scores}")
+
 
 async def send_moderator_alert(ctx, user_id, username):
     current_time = time.time()
@@ -130,6 +129,7 @@ async def send_moderator_alert(ctx, user_id, username):
 
     moderator_channel = ctx.guild.get_channel(1296367023948955728)
     if moderator_channel:
-        await moderator_channel.send(f"⚠️ ALERT: User {username} (ID: {user_id}) has reached a concerning score level. Please review their recent activity.")
+        await moderator_channel.send(
+            f"⚠️ ALERT: User {username} (ID: {user_id}) has reached a concerning score level. Please review their recent activity.")
         last_alert_time[user_id] = current_time
         logger.info(f"Sent alert for user {username} (ID: {user_id})")
